@@ -1,1 +1,1 @@
-PROMPT_VERSION = "triage_v2"
+export const PROMPT_VERSION = "triage-v2";

@@ -1,4 +1,11 @@
-import { client, MODEL } from "@/lib/llm";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  baseURL: process.env.LLM_BASE_URL,
+});
+
+const MODEL = process.env.LLM_MODEL!;
 
 const SYSTEM_PROMPT = "You are a helpful assistant. Answer concisely.";
 
