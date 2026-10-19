@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { TriageSchema, type TriageResult } from "../../lib/schema";
+import { TriageResponseSchema, type TriageResponse } from "../../lib/schema";
 
 export default function TriagePage() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
-  const [result, setResult] = useState<TriageResult | null>(null);
+  const [result, setResult] = useState<TriageResponse | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +41,7 @@ export default function TriagePage() {
       }
 
       // Check the reply against the same contract before showing it.
-      const parsed = TriageSchema.safeParse(data);
+      const parsed = TriageResponseSchema.safeParse(data);
       if (!parsed.success) {
         throw new Error("The server returned an invalid reply. Please try again.");
       }
@@ -86,6 +86,12 @@ export default function TriagePage() {
           <p><strong>Priority:</strong> {result.priority}</p>
           <p><strong>Summary:</strong> {result.summary}</p>
           <p><strong>Suggested action:</strong> {result.suggested_action}</p>
+          <p>
+            <strong>Tokens:</strong>{" "}
+            {result.usage
+              ? `input ${result.usage.input_tokens}, output ${result.usage.output_tokens}, total ${result.usage.total_tokens}`
+              : "not reported by this endpoint"}
+          </p>
         </section>
       )}
     </main>
