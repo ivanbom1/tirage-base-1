@@ -1,16 +1,21 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { TriageSchema, type TriageResult } from "../../lib/schema";
 
 export default function TriagePage() {
-  const [ticket, setTicket] = useState("");
-  const [result, setResult] = useState<string | null>(null);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [result, setResult] = useState<TriageResult | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isSending || !ticket.trim()) return;
+    if (isSending || !body.trim()) return;
+
+    // Ticket text as in the course: subject + "\n\n" + body
+    const ticket = subject + "\n\n" + body;
 
     setIsSending(true);
     setError(null);
@@ -35,16 +40,12 @@ export default function TriagePage() {
         throw new Error(detail);
       }
 
-      if (
-        typeof data !== "object" ||
-        data === null ||
-        !("answer" in data) ||
-        typeof data.answer !== "string"
-      ) {
-        throw new Error("The server returned an invalid reply.");
+      // Check the reply against the same contract before showing it.
+      const parsed = TriageSchema.safeParse(data);
+      if (!parsed.success) {
+        throw new Error("The server returned an invalid reply. Please try again.");
       }
-
-      setResult(data.answer);
+      setResult(parsed.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Triage failed.");
     } finally {
@@ -55,25 +56,36 @@ export default function TriagePage() {
   return (
     <main className="chat">
       <h1>Support triage</h1>
-      <p>Paste a customer ticket (subject, blank line, body).</p>
+      <p>Enter a ticket subject and body.</p>
       <form onSubmit={submit} aria-busy={isSending}>
-        <label htmlFor="ticket">Ticket</label>
+        <label htmlFor="subject">Subject</label>
+        <input
+          id="subject"
+          type="text"
+          value={subject}
+          onChange={(event) => setSubject(event.target.value)}
+          disabled={isSending}
+        />
+        <label htmlFor="body">Body</label>
         <textarea
-          id="ticket"
-          value={ticket}
-          onChange={(event) => setTicket(event.target.value)}
+          id="body"
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
           rows={10}
           required
           disabled={isSending}
         />
-        <button type="submit" disabled={isSending || !ticket.trim()}>
+        <button type="submit" disabled={isSending || !body.trim()}>
           {isSending ? "Triaging..." : "Triage"}
         </button>
         {error && <p role="alert">{error}</p>}
       </form>
       {result && (
         <section aria-label="Triage result">
-          <pre style={{ whiteSpace: "pre-wrap" }}>{result}</pre>
+          <p><strong>Category:</strong> {result.category}</p>
+          <p><strong>Priority:</strong> {result.priority}</p>
+          <p><strong>Summary:</strong> {result.summary}</p>
+          <p><strong>Suggested action:</strong> {result.suggested_action}</p>
         </section>
       )}
     </main>
