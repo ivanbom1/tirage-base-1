@@ -4,9 +4,8 @@ import { TriageRequestSchema } from "../../../lib/schema";
 import { triageTicket } from "../../../lib/triage";
 
 
-function fail(status: number, code: string, message: string) {
-  return Response.json({ error: message, code }, { status });
-}
+const fail = (status: number, code: string, message: string) =>
+  Response.json({ error: message, code }, { status });
 
 
 export async function POST(request: Request) {
@@ -20,24 +19,16 @@ export async function POST(request: Request) {
 
   const req = TriageRequestSchema.safeParse(body);
   if (!req.success) {
-    return fail(
-      400,
-      "bad_request",
-      "Please provide a non-empty ticket (at most 20000 characters).",
-    );
+    return fail(400, "bad_request", "Please provide a non-empty ticket (at most 20000 characters).");
   }
 
-
   try {
-    const result = await triageTicket(req.data.ticket);
-    return Response.json(result);
+    const outcome = await triageTicket(req.data.ticket);
+    // Result fields plus token usage
+    return Response.json({ ...outcome.result, usage: outcome.usage });
   } catch (err) {
     if (err instanceof LlmInvalidOutputError) {
-      return fail(
-        502,
-        "invalid_model_output",
-        "The model returned an invalid answer. Please try again.",
-      );
+      return fail(502, "invalid_model_output", "The model returned an invalid answer. Please try again.");
     }
     if (err instanceof OpenAI.APIConnectionTimeoutError) {
       return fail(504, "triage_timeout", "The triage request timed out. Please try again.");
@@ -51,7 +42,7 @@ export async function POST(request: Request) {
     ) {
       return fail(502, "triage_unavailable", "The triage service is unavailable. Please try again later.");
     }
-
+    
     console.error(
       "triage internal error:",
       err instanceof OpenAI.APIError ? `status ${err.status}` : err instanceof Error ? err.name : "unknown",
