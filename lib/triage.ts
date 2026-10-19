@@ -1,6 +1,6 @@
-import { callModel, LlmInvalidOutputError } from "./llm";
+import { callModel, LlmInvalidOutputError, type ModelReply } from "./llm";
 import { SYSTEM_PROMPT, buildUserMessage } from "./prompt";
-import { TriageSchema, type TriageResult } from "./schema";
+import { TriageSchema, type TriageResult, type Usage } from "./schema";
 
 // Some models wrap JSON in a code fence even when told not to.
 function stripFence(text: string): string {
@@ -10,26 +10,52 @@ function stripFence(text: string): string {
 }
 
 // Use 2 (CHECK): string -> unknown -> trusted value.
-function parseTriage(text: string): TriageResult {
+function parseTriage(
+  reply: ModelReply,
+): { ok: true; data: TriageResult } | { ok: false; reason: string } {
+  if (reply.truncated) return { ok: false, reason: "cut off" };
   let raw: unknown;
   try {
-    raw = JSON.parse(stripFence(text));
+    raw = JSON.parse(stripFence(reply.text));
   } catch {
-    throw new LlmInvalidOutputError("not JSON");
+    return { ok: false, reason: "not JSON" };
   }
   const parsed = TriageSchema.safeParse(raw);
-  if (!parsed.success) throw new LlmInvalidOutputError("schema mismatch");
-  return parsed.data;
+  return parsed.success
+    ? { ok: true, data: parsed.data }
+    : { ok: false, reason: "schema mismatch" };
 }
 
-export async function triageTicket(ticket: string): Promise<TriageResult> {
+function addUsage(a: Usage | null, b: Usage | null): Usage | null {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
+  };
+}
+
+export type TriageOutcome = {
+  result: TriageResult;
+  usage: Usage | null; // summed over attempts, null if never reported
+  attempts: number;
+};
+
+export async function triageTicket(ticket: string): Promise<TriageOutcome> {
   const user = buildUserMessage(ticket);
-  try {
-    return parseTriage(await callModel(SYSTEM_PROMPT, user));
-  } catch (err) {
-    if (!(err instanceof LlmInvalidOutputError)) throw err;
-    // Invalid output: retry once, logged (never log the ticket text or keys).
-    console.warn("triage: invalid model output, retrying once:", err.message);
-    return parseTriage(await callModel(SYSTEM_PROMPT, user));
+  let usage: Usage | null = null;
+  let reason = "invalid output";
+
+  // Invalid output -> retries once
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const reply = await callModel(SYSTEM_PROMPT, user);
+    usage = addUsage(usage, reply.usage);
+    const parsed = parseTriage(reply);
+    if (parsed.ok) return { result: parsed.data, usage, attempts: attempt };
+    reason = parsed.reason;
+    console.warn(`triage: invalid model output (${reason}), attempt ${attempt} of 2`);
   }
+  // The tokens of the failed attempts were still spent
+  throw new LlmInvalidOutputError(reason, usage);
 }
