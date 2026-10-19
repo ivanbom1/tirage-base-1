@@ -1,14 +1,18 @@
 import OpenAI from "openai";
 import { z } from "zod";
-import { TriageSchema } from "./schema";
+import { TriageSchema, type Usage } from "./schema";
+
 
 export class LlmInvalidOutputError extends Error {
-  constructor(message: string) {
+  usage: Usage | null;
+  constructor(message: string, usage: Usage | null = null) {
     super(message);
     this.name = "LlmInvalidOutputError";
+    this.usage = usage;
   }
 }
 
+// Timeout is per attempt, not per operation.
 const client = new OpenAI({
   apiKey: process.env.LLM_API_KEY,
   baseURL: process.env.LLM_BASE_URL,
@@ -16,18 +20,24 @@ const client = new OpenAI({
   maxRetries: 2,
 });
 
-const MODEL = process.env.LLM_MODEL!;
+export const MODEL = process.env.LLM_MODEL!;
+export const API_NAME = "chat_completions";
 
 const MODE =
   process.env.LLM_STRUCTURED_OUTPUT === "json_schema" ? "json_schema" : "prompt";
 
-// Use 1 (ASK): the same Zod contract, as JSON Schema
+// Use 1 (ASK): the same Zod contract, as JSON Schema.
 const { $schema, ...generated } = z.toJSONSchema(TriageSchema);
 void $schema;
 const jsonSchema = { ...generated, additionalProperties: false };
 
-// Returns the raw text of the model's answer
-export async function callModel(system: string, user: string): Promise<string> {
+export type ModelReply = {
+  text: string;
+  usage: Usage | null; // null when the endpoint reports no usage
+  truncated: boolean; // true when the answer was cut off
+};
+
+export async function callModel(system: string, user: string): Promise<ModelReply> {
   const completion = await client.chat.completions.create({
     model: MODEL,
     messages: [
@@ -50,9 +60,20 @@ export async function callModel(system: string, user: string): Promise<string> {
 
   const choice = completion.choices[0];
   if (!choice) throw new LlmInvalidOutputError("no choices");
-  // The JSON is incomplete, so the output is invalid
-  if (choice.finish_reason === "length") {
-    throw new LlmInvalidOutputError("cut off");
-  }
-  return choice.message.content ?? "";
+
+  const u = completion.usage;
+  const usage: Usage | null =
+    u && typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number"
+      ? {
+          input_tokens: u.prompt_tokens,
+          output_tokens: u.completion_tokens,
+          total_tokens: u.total_tokens ?? u.prompt_tokens + u.completion_tokens,
+        }
+      : null;
+
+  return {
+    text: choice.message.content ?? "",
+    usage,
+    truncated: choice.finish_reason === "length",
+  };
 }
