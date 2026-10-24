@@ -5,6 +5,7 @@ import { SmokeResponseSchema, type SmokeResponse } from "../../lib/smokeSchema";
 
 export default function SmokePage() {
   const [dataset, setDataset] = useState("labelled100");
+  const [strategy, setStrategy] = useState("llm");
   const [sampleSize, setSampleSize] = useState(5);
   const [data, setData] = useState<SmokeResponse | null>(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -20,7 +21,7 @@ export default function SmokePage() {
       const response = await fetch("/api/smoke", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dataset, sampleSize }),
+        body: JSON.stringify({ dataset, sampleSize, strategy }),
       });
       const json: unknown = await response.json();
       if (!response.ok) {
@@ -52,6 +53,12 @@ export default function SmokePage() {
           <option value="labelled100">Labelled set (100 tickets)</option>
           <option value="tickets500">500-ticket set (no labels)</option>
         </select>
+        <label htmlFor="strategy">Strategy</label>
+        <select id="strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)} disabled={isRunning}>
+          <option value="llm">LLM only</option>
+          <option value="dm">Decision model only</option>
+          <option value="dm+llm">Decision model decides + LLM writes</option>
+        </select>
         <label htmlFor="size">Random sample size (1 to 50)</label>
         <input
           id="size"
@@ -71,6 +78,7 @@ export default function SmokePage() {
       {data && (
         <section aria-label="Smoke test results">
           <h2>Summary</h2>
+          <p>Strategy: {data.strategy} ({data.model})</p>
           <p>
             {data.summary.total} tickets: {data.summary.succeeded} succeeded, {data.summary.failed} failed.
             {data.summary.totalTokens !== null && ` Total tokens: ${data.summary.totalTokens}.`}
@@ -94,7 +102,8 @@ export default function SmokePage() {
                   {data.labelled && <th style={cell}>Category (labelled)</th>}
                   <th style={cell}>Priority (predicted)</th>
                   {data.labelled && <th style={cell}>Priority (labelled)</th>}
-                  <th style={cell}>Tokens</th>
+                  <th style={cell}>LLM tokens</th>
+                  {data.strategy !== "llm" && <th style={cell}>DM confidence (cat / prio)</th>}
                 </tr>
               </thead>
               <tbody>
@@ -118,6 +127,13 @@ export default function SmokePage() {
                         </td>
                       )}
                       <td style={cell}>{r.usage ? r.usage.total_tokens : "n/a"}</td>
+                      {data.strategy !== "llm" && (
+                        <td style={cell}>
+                          {r.dm
+                            ? `${r.dm.category_confidence?.toFixed(2) ?? "n/a"} / ${r.dm.priority_confidence?.toFixed(2) ?? "n/a"}`
+                            : "n/a"}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

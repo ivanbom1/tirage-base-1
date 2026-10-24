@@ -3,9 +3,16 @@
 import { useState, type FormEvent } from "react";
 import { TriageResponseSchema, type TriageResponse } from "../../lib/schema";
 
+const STRATEGY_LABELS: Record<string, string> = {
+  llm: "LLM only",
+  dm: "Decision model only (no summary or action)",
+  "dm+llm": "Decision model decides, LLM writes",
+};
+
 export default function TriagePage() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [strategy, setStrategy] = useState("llm");
   const [result, setResult] = useState<TriageResponse | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +32,7 @@ export default function TriagePage() {
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket }),
+        body: JSON.stringify({ ticket, strategy }),
       });
       const data: unknown = await response.json();
 
@@ -75,6 +82,12 @@ export default function TriagePage() {
           required
           disabled={isSending}
         />
+        <label htmlFor="strategy">Strategy</label>
+        <select id="strategy" value={strategy} onChange={(event) => setStrategy(event.target.value)} disabled={isSending}>
+          {Object.entries(STRATEGY_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
         <button type="submit" disabled={isSending || !body.trim()}>
           {isSending ? "Triaging..." : "Triage"}
         </button>
@@ -86,12 +99,21 @@ export default function TriagePage() {
           <p><strong>Priority:</strong> {result.priority}</p>
           <p><strong>Summary:</strong> {result.summary}</p>
           <p><strong>Suggested action:</strong> {result.suggested_action}</p>
+          <p><strong>Strategy:</strong> {result.strategy} ({result.model})</p>
           <p>
-            <strong>Tokens:</strong>{" "}
-            {result.usage
-              ? `input ${result.usage.input_tokens}, output ${result.usage.output_tokens}, total ${result.usage.total_tokens}`
-              : "not reported by this endpoint"}
+            <strong>LLM tokens:</strong>{" "}
+            {result.strategy === "dm"
+              ? "no LLM call"
+              : result.usage
+                ? `input ${result.usage.input_tokens}, output ${result.usage.output_tokens}, total ${result.usage.total_tokens}`
+                : "not reported by this endpoint"}
           </p>
+          {result.dm && (
+            <p>
+              <strong>Decision model:</strong> input {result.dm.usage.input_tokens} tokens, confidence category{" "}
+              {result.dm.category_confidence?.toFixed(2) ?? "n/a"}, priority {result.dm.priority_confidence?.toFixed(2) ?? "n/a"}
+            </p>
+          )}
         </section>
       )}
     </main>

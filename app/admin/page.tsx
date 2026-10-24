@@ -9,10 +9,10 @@ const money = (v: number | null) => (v === null ? "unknown" : v.toFixed(6));
 const cell = { padding: "6px 10px", textAlign: "left" as const, borderBottom: "1px solid #ccd3df" };
 
 export default async function AdminPage() {
-  const runs = [...(await readRuns())].reverse();
+  const runs = [...(await readRuns())].reverse(); // newest first
   const head = [
     "Time", "Dataset", "Model", "Strategy", "Tickets", "Outcomes",
-    "Category acc.", "Priority acc.", "Avg ms/ticket", "Total ms", "Tokens in/out", "Cost",
+    "Category acc.", "Priority acc.", "Avg ms/ticket", "Total ms", "LLM tokens in/out", "DM tokens in", "Cost",
   ];
 
   return (
@@ -40,6 +40,7 @@ export default async function AdminPage() {
                 <td style={cell}>{num(r.avg_ticket_ms)}</td>
                 <td style={cell}>{num(r.total_ms)}</td>
                 <td style={cell}>{num(r.input_tokens)} / {num(r.output_tokens)}</td>
+                <td style={cell}>{num(r.dm_input_tokens ?? null)}</td>
                 <td style={cell}>{money(r.cost)}</td>
               </tr>
             ))}
