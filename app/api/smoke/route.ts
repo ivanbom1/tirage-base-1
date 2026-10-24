@@ -1,9 +1,11 @@
 import OpenAI from "openai";
 import { DATASETS, loadDataset, ticketText, type DatasetTicket } from "../../../lib/dataset";
-import { LlmInvalidOutputError, MODEL } from "../../../lib/llm";
+import { DmError } from "../../../lib/dm";
+import { LlmInvalidOutputError } from "../../../lib/llm";
+import type { Strategy } from "../../../lib/schema";
 import { costOf, logRun } from "../../../lib/runlog";
 import { SmokeRequestSchema, type SmokeRow } from "../../../lib/smokeSchema";
-import { triageTicket } from "../../../lib/triage";
+import { modelName, triageTicket } from "../../../lib/triage";
 
 const CONCURRENCY = 2; // low on purpose: free API tiers have small per-minute limits
 
@@ -17,6 +19,7 @@ function sample<T>(items: T[], n: number): T[] {
 }
 
 function errorCode(err: unknown): string {
+  if (err instanceof DmError) return `dm_${err.code}`;
   if (err instanceof LlmInvalidOutputError) return "invalid_model_output";
   if (err instanceof OpenAI.APIConnectionTimeoutError) return "triage_timeout";
   if (err instanceof OpenAI.RateLimitError) return "rate_limited";
@@ -24,7 +27,11 @@ function errorCode(err: unknown): string {
   return "internal_error";
 }
 
-async function runOne(t: DatasetTicket, labelled: boolean): Promise<SmokeRow & { ms: number }> {
+async function runOne(
+  t: DatasetTicket,
+  labelled: boolean,
+  strategy: Strategy,
+): Promise<SmokeRow & { ms: number }> {
   const started = Date.now();
   const base = {
     ticket_id: t.ticket_id,
@@ -35,8 +42,8 @@ async function runOne(t: DatasetTicket, labelled: boolean): Promise<SmokeRow & {
         : null,
   };
   try {
-    const out = await triageTicket(ticketText(t));
-    return { ...base, predicted: out.result, error: null, usage: out.usage, ms: Date.now() - started };
+    const out = await triageTicket(ticketText(t), strategy);
+    return { ...base, predicted: out.result, error: null, usage: out.usage, dm: out.dm, ms: Date.now() - started };
   } catch (err) {
     // A failed ticket is a result, not a reason to stop the run.
     return {
@@ -44,6 +51,7 @@ async function runOne(t: DatasetTicket, labelled: boolean): Promise<SmokeRow & {
       predicted: null,
       error: errorCode(err),
       usage: err instanceof LlmInvalidOutputError ? err.usage : null,
+      dm: null,
       ms: Date.now() - started,
     };
   }
@@ -59,12 +67,12 @@ export async function POST(request: Request) {
   const req = SmokeRequestSchema.safeParse(body);
   if (!req.success) {
     return Response.json(
-      { error: "Choose a dataset and a sample size between 1 and 50.", code: "bad_request" },
+      { error: "Choose a dataset, a strategy and a sample size between 1 and 50.", code: "bad_request" },
       { status: 400 },
     );
   }
 
-  const { dataset, sampleSize } = req.data;
+  const { dataset, sampleSize, strategy } = req.data;
   const labelled = DATASETS[dataset].labelled;
 
   let tickets: DatasetTicket[];
@@ -85,11 +93,10 @@ export async function POST(request: Request) {
     Array.from({ length: CONCURRENCY }, async () => {
       while (next < picked.length) {
         const i = next++;
-        timed[i] = await runOne(picked[i], labelled);
+        timed[i] = await runOne(picked[i], labelled, strategy);
       }
     }),
   );
-
   const totalMs = Date.now() - runStarted;
   const rows: SmokeRow[] = timed.map(({ ms, ...row }) => {
     void ms;
@@ -98,8 +105,6 @@ export async function POST(request: Request) {
 
   const ok = rows.filter((r) => r.predicted);
   const compared = ok.filter((r) => r.labelled);
-  const tokens = rows.map((r) => r.usage?.total_tokens).filter((v): v is number => v != null);
-
   const categoryMismatches = labelled
     ? compared.filter((r) => r.predicted!.category !== r.labelled!.category).length
     : null;
@@ -107,22 +112,30 @@ export async function POST(request: Request) {
     ? compared.filter((r) => r.predicted!.priority !== r.labelled!.priority).length
     : null;
 
-  // Log this run (accuracy, outcome counts, latency, cost, model).
-  const usages = rows.map((r) => r.usage).filter((u) => u !== null);
-  const inputTokens = usages.length ? usages.reduce((a, u) => a + u.input_tokens, 0) : null;
-  const outputTokens = usages.length ? usages.reduce((a, u) => a + u.output_tokens, 0) : null;
+  // LLM tokens and decision model tokens are tracked separately.
+  const llmUsages = rows.map((r) => r.usage).filter((u) => u !== null);
+  const llmIn = llmUsages.length ? llmUsages.reduce((a, u) => a + u.input_tokens, 0) : null;
+  const llmOut = llmUsages.length ? llmUsages.reduce((a, u) => a + u.output_tokens, 0) : null;
+  const dmUsages = rows.map((r) => r.dm?.usage).filter((u) => u != null);
+  const dmIn = dmUsages.length ? dmUsages.reduce((a, u) => a + u.input_tokens, 0) : null;
+  const totalTokens =
+    llmIn === null && dmIn === null
+      ? null
+      : (llmIn ?? 0) + (llmOut ?? 0) + (dmIn ?? 0);
+
   const outcomes: Record<string, number> = {};
   for (const r of rows) {
     const key = r.error ?? "ok";
     outcomes[key] = (outcomes[key] ?? 0) + 1;
   }
+
   await logRun({
     ts: new Date().toISOString(),
     dataset,
     labelled,
     sample_size: rows.length,
-    model: MODEL,
-    strategy: "llm",
+    model: modelName(strategy),
+    strategy,
     succeeded: ok.length,
     failed: rows.length - ok.length,
     outcomes,
@@ -132,13 +145,17 @@ export async function POST(request: Request) {
       priorityMismatches !== null && compared.length ? 1 - priorityMismatches / compared.length : null,
     total_ms: totalMs,
     avg_ticket_ms: Math.round(timed.reduce((a, r) => a + r.ms, 0) / timed.length),
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cost: costOf(inputTokens, outputTokens),
+    input_tokens: llmIn,
+    output_tokens: llmOut,
+    dm_input_tokens: dmIn,
+    // The decision model is on a free tier here, so only LLM tokens cost money.
+    cost: strategy === "dm" ? 0 : costOf(llmIn, llmOut),
   });
 
   return Response.json({
     dataset,
+    strategy,
+    model: modelName(strategy),
     labelled,
     rows,
     summary: {
@@ -147,7 +164,7 @@ export async function POST(request: Request) {
       failed: rows.length - ok.length,
       categoryMismatches,
       priorityMismatches,
-      totalTokens: tokens.length ? tokens.reduce((a, b) => a + b, 0) : null,
+      totalTokens,
     },
   });
 }
