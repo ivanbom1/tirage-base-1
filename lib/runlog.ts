@@ -2,8 +2,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
-// One smoke test run = one line in logs/smoke-runs.jsonl.
-// No ticket text and no keys are ever written here
+// Server-only. One smoke test run = one line in logs/smoke-runs.jsonl.
+// No ticket text and no keys are ever written here.
 const LOG_FILE = path.join(process.cwd(), "logs", "smoke-runs.jsonl");
 
 export const RunLogSchema = z.object({
@@ -12,22 +12,23 @@ export const RunLogSchema = z.object({
   labelled: z.boolean(),
   sample_size: z.number(),
   model: z.string(),
-  strategy: z.string(), 
+  strategy: z.string(), // "llm" for now; the decision model work adds more
   succeeded: z.number(),
   failed: z.number(),
-  outcomes: z.record(z.string(), z.number()), 
+  outcomes: z.record(z.string(), z.number()), // e.g. { ok: 18, rate_limited: 2 }
   category_accuracy: z.number().nullable(), // 0..1, null for unlabelled sets
   priority_accuracy: z.number().nullable(),
   total_ms: z.number(),
   avg_ticket_ms: z.number(),
   input_tokens: z.number().nullable(),
   output_tokens: z.number().nullable(),
+  dm_input_tokens: z.number().nullish(), // decision model tokens (free tier), if used
   cost: z.number().nullable(),
 });
 
 export type RunLog = z.infer<typeof RunLogSchema>;
 
-
+// Prices come from configuration (per million tokens). Unknown price -> null, never a guess.
 export function costOf(input: number | null, output: number | null): number | null {
   const pin = Number(process.env.LLM_PRICE_INPUT_PER_M);
   const pout = Number(process.env.LLM_PRICE_OUTPUT_PER_M);
@@ -37,7 +38,7 @@ export function costOf(input: number | null, output: number | null): number | nu
   return (input * pin + output * pout) / 1_000_000;
 }
 
-
+// A logging failure must never break the run.
 export async function logRun(entry: RunLog): Promise<void> {
   try {
     await fs.mkdir(path.dirname(LOG_FILE), { recursive: true });
